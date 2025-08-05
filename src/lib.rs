@@ -182,86 +182,86 @@ impl Tokenizer {
             Cow::Borrowed(text)
         };
 
-        self.splitters
-            .iter()
-            .try_fold(
+        let parallel = text.len() > 1024 * 8;
+
+        try_fold(
+            parallel,
+            self.splitters.iter().try_fold(
                 {
                     let mut splits = Vec::with_capacity(text.len() / 4);
                     splits.push(Split::Bytes(0..text.len()));
                     splits
                 },
                 |splits, splitter| {
-                    splits
-                        .into_par_iter()
-                        .try_fold(
-                            || {
-                                Self::SPLIT_SHARED_BUFFER.with(|buffer| {
-                                    buffer.prepare(0);
-                                    buffer.take_buffer()
-                                })
-                            },
-                            |mut acc, split| {
-                                match split {
-                                    Split::Bytes(r) => {
-                                        splitter.split(&text[r.clone()], r.start, &mut acc)?
-                                    }
-                                    literal => acc.push(literal),
+                    try_fold(
+                        parallel,
+                        splits,
+                        || {
+                            Self::SPLIT_SHARED_BUFFER.with(|buffer| {
+                                buffer.prepare(0);
+                                buffer.take_buffer()
+                            })
+                        },
+                        |mut acc, split| {
+                            match split {
+                                Split::Bytes(r) => {
+                                    splitter.split(&text[r.clone()], r.start, &mut acc)?
                                 }
+                                literal => acc.push(literal),
+                            }
 
-                                Ok::<_, Error>(acc)
-                            },
-                        )
-                        .try_reduce(Vec::new, |mut a, b| {
+                            Ok(acc)
+                        },
+                        |mut a, b| {
                             a.extend_from_slice(&b);
 
                             Self::SPLIT_SHARED_BUFFER.with(|buffer| buffer.return_buffer(b));
 
                             Ok(a)
-                        })
+                        },
+                    )
                 },
-            )?
-            .par_iter()
-            .try_fold(
-                || {
-                    Self::RANK_SHARED_BUFFER.with(|buffer| {
-                        buffer.prepare(text.len() / 4);
-                        buffer.take_buffer()
-                    })
-                },
-                |mut acc, split| {
-                    match split {
-                        Split::Literal(r) => {
-                            let bytes = &text[r.start..r.end];
-                            if let Some(rank) = self.special_encoder.get(bytes) {
-                                acc.push(*rank);
-                            } else if let Some(entry) = self.encoder.get(bytes) {
-                                acc.push(entry.rank);
-                            } else {
-                                return Err(Error::NoValidToken(
-                                    String::from_utf8_lossy(bytes).to_string(),
-                                ));
-                            }
-                        }
-                        Split::Bytes(r) => {
-                            let bytes = &text[r.start..r.end];
-                            if let Some(entry) = self.encoder.get(bytes) {
-                                acc.push(entry.rank);
-                            } else {
-                                self.bpe_merge(bytes, &mut acc)?;
-                            }
+            )?,
+            || {
+                Self::RANK_SHARED_BUFFER.with(|buffer| {
+                    buffer.prepare(text.len() / 4);
+                    buffer.take_buffer()
+                })
+            },
+            |mut acc, split| {
+                match split {
+                    Split::Literal(r) => {
+                        let bytes = &text[r.start..r.end];
+                        if let Some(rank) = self.special_encoder.get(bytes) {
+                            acc.push(*rank);
+                        } else if let Some(entry) = self.encoder.get(bytes) {
+                            acc.push(entry.rank);
+                        } else {
+                            return Err(Error::NoValidToken(
+                                String::from_utf8_lossy(bytes).to_string(),
+                            ));
                         }
                     }
+                    Split::Bytes(r) => {
+                        let bytes = &text[r.start..r.end];
+                        if let Some(entry) = self.encoder.get(bytes) {
+                            acc.push(entry.rank);
+                        } else {
+                            self.bpe_merge(bytes, &mut acc)?;
+                        }
+                    }
+                }
 
-                    Ok(acc)
-                },
-            )
-            .try_reduce(Vec::new, |mut a, b| {
+                Ok(acc)
+            },
+            |mut a, b| {
                 a.extend_from_slice(&b);
 
                 Self::RANK_SHARED_BUFFER.with(|buffer| buffer.return_buffer(b));
 
                 Ok(a)
-            })
+            },
+        )
     }
 
     pub fn encode_batch<T, I>(&self, texts: T) -> Result<Vec<Vec<Rank>>, Error>
@@ -434,6 +434,30 @@ impl Tokenizer {
 
             Ok(())
         })
+    }
+}
+
+fn try_fold<C, E, I, F, R, T>(
+    parallel: bool,
+    collection: C,
+    initial: I,
+    f: F,
+    reduce: R,
+) -> Result<Vec<T>, Error>
+where
+    C: IntoParallelIterator<Item = E> + IntoIterator<Item = E>,
+    I: Fn() -> Vec<T> + Send + Sync,
+    F: Fn(Vec<T>, E) -> Result<Vec<T>, Error> + Send + Sync,
+    R: Fn(Vec<T>, Vec<T>) -> Result<Vec<T>, Error> + Send + Sync,
+    T: Send,
+{
+    if parallel {
+        collection
+            .into_par_iter()
+            .try_fold(initial, f)
+            .try_reduce(Vec::new, reduce)
+    } else {
+        collection.into_iter().try_fold(initial(), f)
     }
 }
 
