@@ -6,8 +6,7 @@ use tokenizers::Tokenizer as HfTokenizer;
 mod common;
 use common::{load_corpus_files, load_tokenizer_configs};
 
-#[test]
-fn test_compatibility() {
+fn main() {
     let corpus_texts = load_corpus_files().unwrap().into_iter().collect::<Vec<_>>();
     let tokenizer_configs = load_tokenizer_configs(None).unwrap();
 

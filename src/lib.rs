@@ -1,14 +1,8 @@
-use std::{
-    borrow::Cow,
-    cell::{RefCell, RefMut},
-    cmp::Ordering,
-    collections::HashMap,
-    ops::Range,
-};
+use std::{borrow::Cow, cmp::Ordering, ops::Range};
 
+use ahash::AHashMap;
 use aho_corasick::{AhoCorasickBuilder, MatchKind};
 use rayon::prelude::*;
-use rustc_hash::FxBuildHasher;
 use thiserror::Error;
 
 #[cfg(feature = "pyo3")]
@@ -24,13 +18,13 @@ use crate::splitters::{Split, Splitter, WordSplitter};
 pub type Rank = u32;
 
 struct EncoderEntry {
-    priorities: Option<HashMap<usize, Rank, FxBuildHasher>>,
+    priorities: Option<Box<[Option<Rank>]>>,
     rank: Rank,
 }
 
-type EncoderMap = HashMap<Vec<u8>, EncoderEntry, FxBuildHasher>;
-type SpecialEncoderMap = HashMap<Vec<u8>, Rank, FxBuildHasher>;
-type DecoderMap = HashMap<Rank, Vec<u8>, FxBuildHasher>;
+type EncoderMap = AHashMap<Box<[u8]>, EncoderEntry>;
+type SpecialEncoderMap = AHashMap<Box<[u8]>, Rank>;
+type DecoderMap = Box<[Box<[u8]>]>;
 
 pub struct Token {
     pub bytes: Vec<u8>,
@@ -68,43 +62,53 @@ impl Tokenizer {
         let mut splitters_acc = vec![Splitter::AhoCorasick(special_tokens_matcher)];
         splitters_acc.extend(splitters);
 
-        let mut merge_priorities_map = HashMap::new();
+        let mut encoder = EncoderMap::default();
+        let mut decoder_acc = Vec::new();
+
+        for item in vocab.into_iter() {
+            encoder.insert(
+                item.bytes.clone().into_boxed_slice(),
+                EncoderEntry {
+                    rank: item.rank,
+                    priorities: None,
+                },
+            );
+            if decoder_acc.len() <= item.rank as usize {
+                decoder_acc.resize(item.rank as usize + 1, Vec::new().into_boxed_slice());
+            }
+            decoder_acc[item.rank as usize] = item.bytes.into_boxed_slice();
+        }
+        let decoder: DecoderMap = decoder_acc.into_boxed_slice();
+
         if let Some(merges) = merges {
             merges
                 .into_iter()
                 .enumerate()
-                .for_each(|(priority, (mut acc, right))| {
-                    let left_len = acc.len();
-                    acc.extend_from_slice(&right);
-                    merge_priorities_map
-                        .entry(acc)
-                        .or_insert_with(HashMap::default)
-                        .insert(left_len, priority as Rank);
+                .for_each(|(priority, (mut left, right))| {
+                    let left_len = left.len();
+                    left.extend_from_slice(&right);
+
+                    encoder.get_mut(left.as_slice()).map(|entry| {
+                        entry
+                            .priorities
+                            .get_or_insert(vec![None; left.len()].into_boxed_slice())[left_len] =
+                            Some(priority as Rank);
+                    });
                 });
         };
 
-        let mut encoder = EncoderMap::default();
-        let mut decoder = DecoderMap::default();
-
-        for item in vocab {
-            let priorities = merge_priorities_map.get(&item.bytes).cloned();
-            encoder.insert(
-                item.bytes.clone(),
-                EncoderEntry {
-                    rank: item.rank,
-                    priorities,
-                },
-            );
-            decoder.insert(item.rank, item.bytes);
-        }
-
         let mut special_encoder = SpecialEncoderMap::default();
-        let mut special_tokens_decoder = DecoderMap::default();
+        let mut special_tokens_decoder_acc = Vec::new();
 
         for item in special_vocab {
-            special_encoder.insert(item.bytes.clone(), item.rank);
-            special_tokens_decoder.insert(item.rank, item.bytes);
+            special_encoder.insert(item.bytes.clone().into_boxed_slice(), item.rank);
+            if special_tokens_decoder_acc.len() <= item.rank as usize {
+                special_tokens_decoder_acc
+                    .resize(item.rank as usize + 1, Vec::new().into_boxed_slice());
+            }
+            special_tokens_decoder_acc[item.rank as usize] = item.bytes.into_boxed_slice();
         }
+        let special_tokens_decoder: DecoderMap = special_tokens_decoder_acc.into_boxed_slice();
 
         Ok(Self {
             encoder,
@@ -118,33 +122,18 @@ impl Tokenizer {
     }
 
     pub fn decode(&self, tokens: &[Rank]) -> Result<Vec<&[u8]>, Error> {
-        let get_bytes = |token: &Rank| -> Result<&[u8], Error> {
-            if let Some(bytes) = self.decoder.get(&token) {
-                Ok(bytes.as_slice())
-            } else if let Some(bytes) = self.special_tokens_decoder.get(&token) {
-                Ok(bytes.as_slice())
-            } else {
-                return Err(Error::InvalidToken(*token));
-            }
-        };
-
-        let mut sequence = if tokens.len() < 1024 {
-            tokens
-                .iter()
-                .map(get_bytes)
-                .collect::<Result<Vec<_>, Error>>()
-        } else {
-            tokens
-                .par_iter()
-                .try_fold(Vec::new, |mut acc, token| {
-                    acc.push(get_bytes(token)?);
-                    Ok(acc)
-                })
-                .try_reduce(Vec::new, |mut a, b| {
-                    a.extend(b);
-                    Ok(a)
-                })
-        }?;
+        let mut sequence = tokens
+            .iter()
+            .filter_map(|token| {
+                if let Some(bytes) = self.decoder.get(*token as usize) {
+                    Some(&**bytes)
+                } else if let Some(bytes) = self.special_tokens_decoder.get(*token as usize) {
+                    Some(&**bytes)
+                } else {
+                    return None;
+                }
+            })
+            .collect::<Vec<_>>();
 
         if let Some(prefix) = &self.prefix {
             if sequence.first().map_or(false, |s| s.starts_with(prefix)) {
@@ -167,11 +156,6 @@ impl Tokenizer {
             .collect::<Result<Vec<_>, Error>>()
     }
 
-    thread_local! {
-        static SPLIT_SHARED_BUFFER: Buffer<Split> = const { Buffer(RefCell::new(Vec::new())) };
-        static RANK_SHARED_BUFFER: Buffer<Rank> = const { Buffer(RefCell::new(Vec::new())) };
-    }
-
     pub fn encode(&self, text: &[u8]) -> Result<Vec<Rank>, Error> {
         let text = if let Some(prefix) = &self.prefix {
             let mut text_acc = Vec::with_capacity(prefix.len() + text.len());
@@ -182,26 +166,17 @@ impl Tokenizer {
             Cow::Borrowed(text)
         };
 
-        let parallel = text.len() > 1024 * 8;
-
-        try_fold(
-            parallel,
-            self.splitters.iter().try_fold(
+        self.splitters
+            .iter()
+            .try_fold(
                 {
                     let mut splits = Vec::with_capacity(text.len() / 4);
                     splits.push(Split::Bytes(0..text.len()));
                     splits
                 },
                 |splits, splitter| {
-                    try_fold(
-                        parallel,
-                        splits,
-                        || {
-                            Self::SPLIT_SHARED_BUFFER.with(|buffer| {
-                                buffer.prepare(0);
-                                buffer.take_buffer()
-                            })
-                        },
+                    splits.into_iter().try_fold(
+                        Vec::with_capacity(text.len() / 4),
                         |mut acc, split| {
                             match split {
                                 Split::Bytes(r) => {
@@ -210,25 +185,13 @@ impl Tokenizer {
                                 literal => acc.push(literal),
                             }
 
-                            Ok(acc)
-                        },
-                        |mut a, b| {
-                            a.extend_from_slice(&b);
-
-                            Self::SPLIT_SHARED_BUFFER.with(|buffer| buffer.return_buffer(b));
-
-                            Ok(a)
+                            Ok::<_, Error>(acc)
                         },
                     )
                 },
-            )?,
-            || {
-                Self::RANK_SHARED_BUFFER.with(|buffer| {
-                    buffer.prepare(text.len() / 4);
-                    buffer.take_buffer()
-                })
-            },
-            |mut acc, split| {
+            )?
+            .into_iter()
+            .try_fold(Vec::with_capacity(text.len() / 4), |mut acc, split| {
                 match split {
                     Split::Literal(r) => {
                         let bytes = &text[r.start..r.end];
@@ -253,15 +216,7 @@ impl Tokenizer {
                 }
 
                 Ok(acc)
-            },
-            |mut a, b| {
-                a.extend_from_slice(&b);
-
-                Self::RANK_SHARED_BUFFER.with(|buffer| buffer.return_buffer(b));
-
-                Ok(a)
-            },
-        )
+            })
     }
 
     pub fn encode_batch<T, I>(&self, texts: T) -> Result<Vec<Vec<Rank>>, Error>
@@ -275,189 +230,142 @@ impl Tokenizer {
             .collect()
     }
 
-    thread_local! {
-        static BPE_SHARED_BUFFER: (Buffer<WordState>, Buffer<Match>) = const {
-            (Buffer(RefCell::new(Vec::new())), Buffer(RefCell::new(Vec::new())))
-        };
-    }
-
     fn bpe_merge(&self, chunk: &[u8], output: &mut Vec<Rank>) -> Result<(), Error> {
-        Self::BPE_SHARED_BUFFER.with(|buffer| {
-            let (word_states_buffer, matches_buffer) = buffer;
-            word_states_buffer.prepare(chunk.len());
-            matches_buffer.prepare(chunk.len().saturating_sub(1));
+        let mut word_states = Vec::with_capacity(chunk.len());
+        let mut matches = Vec::with_capacity(chunk.len());
 
-            let word_states = &mut *word_states_buffer.borrow_mut();
-            let matches = &mut *matches_buffer.borrow_mut();
+        for (right_index, word_result) in self
+            .word_splitter
+            .into_iter(chunk, &self.encoder)
+            .enumerate()
+        {
+            let (word, rank) = word_result?;
+            word_states.push(WordState {
+                rank,
+                word,
+                left_index: right_index.wrapping_sub(1),
+                right_index,
+                is_removed: false,
+            });
+        }
 
-            for (right_index, word_result) in self
-                .word_splitter
-                .into_iter(chunk, &self.encoder)
-                .enumerate()
-            {
-                let (word, rank) = word_result?;
-                word_states.push(WordState {
-                    rank,
+        for (left_index, window) in word_states.windows(2).enumerate() {
+            let (WordState { word: left, .. }, WordState { word: right, .. }) =
+                (&window[0], &window[1]);
+
+            let combined = &chunk[left.start..right.end];
+            let entry = self.encoder.get(combined);
+
+            let (rank, priority, is_removed) = match entry {
+                Some(entry) => (
+                    entry.rank,
+                    entry
+                        .priorities
+                        .as_ref()
+                        .and_then(|p| p.get(left.len()).copied().flatten()),
+                    false,
+                ),
+                None => (Rank::MAX, None, true),
+            };
+
+            matches.push(Match {
+                word: left.start..right.end,
+                left_index,
+                right_index: left_index + 1,
+                rank,
+                priority,
+                is_removed,
+            });
+        }
+
+        loop {
+            let Some((
+                match_index,
+                Match {
                     word,
-                    left_index: right_index.wrapping_sub(1),
+                    rank,
+                    left_index,
                     right_index,
-                    is_removed: false,
-                });
-            }
+                    ..
+                },
+            )) = matches
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| !m.is_removed)
+                .min_by(|(_, l), (_, r)| match (l.priority, r.priority) {
+                    (Some(left), Some(right)) => left.cmp(&right),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => l.rank.cmp(&r.rank),
+                })
+                .map(|(index, m)| (index, m.clone()))
+            else {
+                break;
+            };
 
-            for (left_index, window) in word_states.windows(2).enumerate() {
-                let (WordState { word: left, .. }, WordState { word: right, .. }) =
-                    (&window[0], &window[1]);
+            let new_word_state = &word_states[left_index];
+            let consumed_word_state = &word_states[right_index];
 
-                let combined = &chunk[left.start..right.end];
-                let entry = self.encoder.get(combined);
+            if let Some(left_match) = matches.get_mut(new_word_state.left_index) {
+                let left_word = &word_states[left_match.left_index];
+                let new_word = left_word.word.start..word.end;
+                let new_entry = self.encoder.get(&chunk[new_word.clone()]);
 
-                let (rank, priority, is_removed) = match entry {
+                let (rank, priority, is_removed) = match new_entry {
                     Some(entry) => (
                         entry.rank,
                         entry
                             .priorities
                             .as_ref()
-                            .and_then(|p| p.get(&left.len()).copied()),
+                            .and_then(|p| p[left_word.word.len()]),
                         false,
                     ),
                     None => (Rank::MAX, None, true),
                 };
 
-                matches.push(Match {
-                    word: left.start..right.end,
-                    left_index,
-                    right_index: left_index + 1,
-                    rank,
-                    priority,
-                    is_removed,
-                });
+                left_match.word = new_word;
+                left_match.rank = rank;
+                left_match.priority = priority;
+                left_match.is_removed = is_removed;
             }
 
-            loop {
-                let active_matches: Vec<_> = matches
-                    .iter_mut()
-                    .enumerate()
-                    .filter(|(_, m)| !m.is_removed)
-                    .collect();
-
-                if active_matches.is_empty() {
-                    break;
-                }
-
-                let Some((
-                    match_index,
-                    Match {
-                        word,
-                        rank,
-                        left_index,
-                        right_index,
-                        ..
-                    },
-                )) = active_matches
-                    .into_iter()
-                    .min_by(|(_, l), (_, r)| match (l.priority, r.priority) {
-                        (Some(left), Some(right)) => left.cmp(&right),
-                        (Some(_), None) => Ordering::Less,
-                        (None, Some(_)) => Ordering::Greater,
-                        (None, None) => l.rank.cmp(&r.rank),
-                    })
-                    .map(|(index, m)| (index, m.clone()))
-                else {
-                    break;
+            if let Some(right_match) = matches.get_mut(consumed_word_state.right_index) {
+                let right_word = &word_states[right_match.right_index];
+                let new_word = word.start..right_word.word.end;
+                let new_entry = self.encoder.get(&chunk[new_word.clone()]);
+                let (rank, priority, is_removed) = match new_entry {
+                    Some(entry) => (
+                        entry.rank,
+                        entry.priorities.as_ref().and_then(|p| p[word.len()]),
+                        false,
+                    ),
+                    None => (Rank::MAX, None, true),
                 };
 
-                let new_word_state = &word_states[left_index];
-                let consumed_word_state = &word_states[right_index];
-
-                if let Some(left_match) = matches.get_mut(new_word_state.left_index) {
-                    let left_word = &word_states[left_match.left_index];
-                    let new_word = left_word.word.start..word.end;
-                    let new_entry = self.encoder.get(&chunk[new_word.clone()]);
-
-                    let (rank, priority, is_removed) = match new_entry {
-                        Some(entry) => (
-                            entry.rank,
-                            entry
-                                .priorities
-                                .as_ref()
-                                .and_then(|p| p.get(&left_word.word.len()).copied()),
-                            false,
-                        ),
-                        None => (Rank::MAX, None, true),
-                    };
-
-                    left_match.word = new_word;
-                    left_match.rank = rank;
-                    left_match.priority = priority;
-                    left_match.is_removed = is_removed;
-                }
-
-                if let Some(right_match) = matches.get_mut(consumed_word_state.right_index) {
-                    let right_word = &word_states[right_match.right_index];
-                    let new_word = word.start..right_word.word.end;
-                    let new_entry = self.encoder.get(&chunk[new_word.clone()]);
-                    let (rank, priority, is_removed) = match new_entry {
-                        Some(entry) => (
-                            entry.rank,
-                            entry
-                                .priorities
-                                .as_ref()
-                                .and_then(|p| p.get(&word.len()).copied()),
-                            false,
-                        ),
-                        None => (Rank::MAX, None, true),
-                    };
-
-                    right_match.word = new_word;
-                    right_match.rank = rank;
-                    right_match.priority = priority;
-                    right_match.is_removed = is_removed;
-                    right_match.left_index = left_index;
-                }
-
-                let new_right_match_index = consumed_word_state.right_index;
-                let new_word_mut = &mut word_states[left_index];
-                new_word_mut.right_index = new_right_match_index;
-                new_word_mut.word = word;
-                new_word_mut.rank = rank;
-
-                word_states[right_index].is_removed = true;
-                matches[match_index].is_removed = true;
+                right_match.word = new_word;
+                right_match.rank = rank;
+                right_match.priority = priority;
+                right_match.is_removed = is_removed;
+                right_match.left_index = left_index;
             }
 
-            output.extend(
-                word_states
-                    .iter()
-                    .filter_map(|w| (!w.is_removed).then_some(w.rank)),
-            );
+            let new_right_match_index = consumed_word_state.right_index;
+            let new_word_mut = &mut word_states[left_index];
+            new_word_mut.right_index = new_right_match_index;
+            new_word_mut.word = word;
+            new_word_mut.rank = rank;
 
-            Ok(())
-        })
-    }
-}
+            word_states[right_index].is_removed = true;
+            matches[match_index].is_removed = true;
+        }
 
-fn try_fold<C, E, I, F, R, T>(
-    parallel: bool,
-    collection: C,
-    initial: I,
-    f: F,
-    reduce: R,
-) -> Result<Vec<T>, Error>
-where
-    C: IntoParallelIterator<Item = E> + IntoIterator<Item = E>,
-    I: Fn() -> Vec<T> + Send + Sync,
-    F: Fn(Vec<T>, E) -> Result<Vec<T>, Error> + Send + Sync,
-    R: Fn(Vec<T>, Vec<T>) -> Result<Vec<T>, Error> + Send + Sync,
-    T: Send,
-{
-    if parallel {
-        collection
-            .into_par_iter()
-            .try_fold(initial, f)
-            .try_reduce(Vec::new, reduce)
-    } else {
-        collection.into_iter().try_fold(initial(), f)
+        output.extend(
+            word_states
+                .iter()
+                .filter_map(|w| (!w.is_removed).then_some(w.rank)),
+        );
+
+        Ok(())
     }
 }
 
@@ -477,31 +385,6 @@ struct Match {
     rank: Rank,
     priority: Option<Rank>,
     is_removed: bool,
-}
-
-struct Buffer<T>(RefCell<Vec<T>>);
-
-impl<T> Buffer<T> {
-    fn prepare(&self, num_items: usize) {
-        let mut items = self.0.borrow_mut();
-
-        items.clear();
-
-        let capacity = items.capacity();
-        items.reserve(num_items.saturating_sub(capacity));
-    }
-
-    fn borrow_mut(&self) -> RefMut<Vec<T>> {
-        self.0.borrow_mut()
-    }
-
-    fn take_buffer(&self) -> Vec<T> {
-        std::mem::take(&mut self.0.borrow_mut())
-    }
-
-    fn return_buffer(&self, buffer: Vec<T>) {
-        *self.0.borrow_mut() = buffer;
-    }
 }
 
 #[derive(Error, Debug)]

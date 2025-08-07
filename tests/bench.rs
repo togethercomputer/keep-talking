@@ -156,31 +156,33 @@ fn generate_test_text(size_mb: f64) -> String {
 
 fn bench_throughput(c: &mut Criterion) {
     let tokenizer_configs = load_tokenizer_configs(None).unwrap();
-    let test_text = generate_test_text(1024.0); // 10MB for benchmarking
-
     let tokenizers: Vec<_> = tokenizer_configs
         .iter()
         .map(|(_, tokenizer_path)| Tokenizer::from_tokenizer_json(tokenizer_path).unwrap())
         .collect();
 
-    let num_chunks = 100;
-    let text_chunks = (0..num_chunks)
-        .map(|i| {
-            let chunk_size = test_text.len() / num_chunks;
-            let start = i * chunk_size;
-            let end = test_text.len().min((i + 1) * chunk_size);
-            test_text[start..end].as_bytes()
-        })
-        .collect::<Vec<_>>();
+    for size_mb in [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0] {
+        let test_text = generate_test_text(size_mb);
 
-    let mut throughput_group = c.benchmark_group("throughput");
-    throughput_group.sample_size(10);
-    for (tokenizer, (model_name, _)) in tokenizers.iter().zip(&tokenizer_configs) {
-        throughput_group.bench_function(model_name, |b| {
-            b.iter(|| black_box(tokenizer.encode_batch(&text_chunks).unwrap()))
-        });
+        let num_chunks = 100;
+        let text_chunks = (0..num_chunks)
+            .map(|i| {
+                let chunk_size = test_text.len() / num_chunks;
+                let start = i * chunk_size;
+                let end = test_text.len().min((i + 1) * chunk_size);
+                test_text[start..end].as_bytes()
+            })
+            .collect::<Vec<_>>();
+
+        let mut throughput_group = c.benchmark_group(format!("throughput_{}", size_mb));
+        throughput_group.sample_size(10);
+        for (tokenizer, (model_name, _)) in tokenizers.iter().zip(&tokenizer_configs) {
+            throughput_group.bench_function(model_name, |b| {
+                b.iter(|| black_box(tokenizer.encode_batch(&text_chunks).unwrap()))
+            });
+        }
+        throughput_group.finish();
     }
-    throughput_group.finish();
 }
 
 criterion_group!(build, bench_build);
