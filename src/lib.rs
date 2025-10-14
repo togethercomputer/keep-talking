@@ -5,15 +5,10 @@ use aho_corasick::{AhoCorasickBuilder, MatchKind};
 use rayon::prelude::*;
 use thiserror::Error;
 
-#[cfg(feature = "pyo3")]
-mod bindings;
+use crate::splitters::{Split, Splitter, WordSplitter};
+
 pub mod loaders;
 pub(crate) mod splitters;
-
-#[cfg(feature = "pyo3")]
-use pyo3::{prelude::*, types::PyModule};
-
-use crate::splitters::{Split, Splitter, WordSplitter};
 
 pub type Rank = u32;
 
@@ -88,12 +83,12 @@ impl Tokenizer {
                     let left_len = left.len();
                     left.extend_from_slice(&right);
 
-                    encoder.get_mut(left.as_slice()).map(|entry| {
+                    if let Some(entry) = encoder.get_mut(left.as_slice()) {
                         entry
                             .priorities
                             .get_or_insert(vec![None; left.len()].into_boxed_slice())[left_len] =
                             Some(priority as Rank);
-                    });
+                    }
                 });
         };
 
@@ -136,7 +131,7 @@ impl Tokenizer {
             .collect::<Vec<_>>();
 
         if let Some(prefix) = &self.prefix {
-            if sequence.first().map_or(false, |s| s.starts_with(prefix)) {
+            if sequence.first().is_some_and(|s| s.starts_with(prefix)) {
                 sequence[0] = &sequence[0][prefix.len()..];
                 return Ok(sequence);
             }
@@ -234,10 +229,7 @@ impl Tokenizer {
         let mut word_states = Vec::with_capacity(chunk.len());
         let mut matches = Vec::with_capacity(chunk.len());
 
-        for (right_index, word_result) in self
-            .word_splitter
-            .into_iter(chunk, &self.encoder)
-            .enumerate()
+        for (right_index, word_result) in self.word_splitter.iter(chunk, &self.encoder).enumerate()
         {
             let (word, rank) = word_result?;
             word_states.push(WordState {
@@ -436,13 +428,4 @@ pub enum Error {
 
     #[error("missing supported normalizer and pretokenizer combination")]
     MissingNormalizerPretokenizer,
-}
-
-#[cfg(feature = "pyo3")]
-#[pymodule]
-fn keep_talkin(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<bindings::Tokenizer>()?;
-    m.add_class::<bindings::Token>()?;
-    bindings::register_exceptions(py, m)?;
-    Ok(())
 }

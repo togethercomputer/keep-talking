@@ -5,10 +5,10 @@ use std::{
     path::Path,
 };
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 
-use crate::{splitters::WordSplitter, Error, Rank, Splitter, Token, Tokenizer};
+use crate::{Error, Rank, Splitter, Token, Tokenizer, splitters::WordSplitter};
 
 #[derive(Deserialize)]
 struct HuggingFaceTokenizer {
@@ -168,10 +168,12 @@ impl Tokenizer {
             },
             (
                 [],
-                [HuggingFaceSubPreTokenizer::Metaspace {
-                    replacement,
-                    prepend_scheme,
-                }],
+                [
+                    HuggingFaceSubPreTokenizer::Metaspace {
+                        replacement,
+                        prepend_scheme,
+                    },
+                ],
             ) => {
                 let replacement = replacement.as_ref().map_or("▁", |s| s.as_str());
                 SplitTechnique::Metaspace(replacement, prepend_scheme.is_some())
@@ -238,10 +240,10 @@ impl Tokenizer {
                 },
                 SplitTechnique::Regex((_, byte_level_encoded)) => {
                     if *byte_level_encoded {
-                        return Token {
+                        Token {
                             bytes: reverse_byte_level(&token),
                             rank,
-                        };
+                        }
                     } else {
                         Token {
                             bytes: token.into_bytes(),
