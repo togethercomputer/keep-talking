@@ -1,13 +1,17 @@
+[workspace]
+members = [".", "bindings/python"]
+default-members = ["."]
+
 [package]
-name = "keep-talkin"
+name = "keep-talking"
 version = "0.1.0"
-edition = "2021"
-authors = ["Jason Wiemels <jwiemels@usc.edu>"]
+edition = "2024"
+authors = ["Jason Wiemels <jason@together.ai>"]
 autobenches = false
 autotests = false
 
 [lib]
-name = "keep_talkin"
+name = "keep_talking"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
@@ -19,7 +23,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
 thiserror = "1.0"
-pyo3 = { version = "0.25", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.26", features = ["extension-module"], optional = true }
 
 [dev-dependencies]
 criterion = "0.6"

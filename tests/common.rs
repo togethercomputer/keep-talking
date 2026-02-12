@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use hf_hub::api::sync::{ApiBuilder, ApiError};
-use keep_talkin::Error;
+use keep_talking::Error;
 
 pub(crate) const TEST_MODELS: &[&str] = &[
     "meta-llama/Llama-3.2-90B-Vision-Instruct",

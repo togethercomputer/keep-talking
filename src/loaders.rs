@@ -5,10 +5,10 @@ use std::{
     path::Path,
 };
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 
-use crate::{splitters::WordSplitter, Error, Rank, Splitter, Token, Tokenizer};
+use crate::{Error, Rank, Splitter, Token, Tokenizer, splitters::WordSplitter};
 
 #[derive(Deserialize)]
 struct HuggingFaceTokenizer {
@@ -168,10 +168,12 @@ impl Tokenizer {
             },
             (
                 [],
-                [HuggingFaceSubPreTokenizer::Metaspace {
-                    replacement,
-                    prepend_scheme,
-                }],
+                [
+                    HuggingFaceSubPreTokenizer::Metaspace {
+                        replacement,
+                        prepend_scheme,
+                    },
+                ],
             ) => {
                 let replacement = replacement.as_ref().map_or("▁", |s| s.as_str());
                 SplitTechnique::Metaspace(replacement, prepend_scheme.is_some())
@@ -215,20 +217,17 @@ impl Tokenizer {
         };
 
         let transform_token = |token: String, rank: Rank| -> Token {
-            if hf_tokenizer.model.byte_fallback.unwrap_or(false) {
-                if let Some(hex_part) = token
+            if hf_tokenizer.model.byte_fallback.unwrap_or(false)
+                && let Some(hex_part) = token
                     .strip_prefix("<0x")
                     .and_then(|rest| rest.strip_suffix('>'))
-                {
-                    if hex_part.len() == 2 {
-                        if let Ok(byte) = u8::from_str_radix(hex_part.to_lowercase().as_str(), 16) {
-                            return Token {
-                                bytes: vec![byte],
-                                rank,
-                            };
-                        }
-                    }
-                }
+                && hex_part.len() == 2
+                && let Ok(byte) = u8::from_str_radix(hex_part.to_lowercase().as_str(), 16)
+            {
+                return Token {
+                    bytes: vec![byte],
+                    rank,
+                };
             }
 
             match &split_technique {
@@ -238,10 +237,10 @@ impl Tokenizer {
                 },
                 SplitTechnique::Regex((_, byte_level_encoded)) => {
                     if *byte_level_encoded {
-                        return Token {
+                        Token {
                             bytes: reverse_byte_level(&token),
                             rank,
-                        };
+                        }
                     } else {
                         Token {
                             bytes: token.into_bytes(),

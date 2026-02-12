@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
-use keep_talkin::Tokenizer;
+use criterion::{Criterion, criterion_group, criterion_main};
+use keep_talking::Tokenizer;
 
 mod common;
 use common::{load_corpus_files, load_tokenizer_configs};

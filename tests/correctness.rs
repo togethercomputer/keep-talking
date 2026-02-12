@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use keep_talkin::Tokenizer;
+use keep_talking::Tokenizer;
 use tokenizers::Tokenizer as HfTokenizer;
 
 mod common;

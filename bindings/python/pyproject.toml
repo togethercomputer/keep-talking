@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "keep_talkin"
+version = "0.1.0"
+requires-python = ">=3.9"
+description = "Minimal Python bindings for keep-talking"
+authors = [{ name = "Jason Wiemels", email = "jason@together.ai" }]
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Operating System :: OS Independent",
+]

@@ -1,0 +1,12 @@
+[package]
+name = "keep-talking-python"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "keep_talkin_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+keep-talking = { path = "../../" }
+pyo3 = { version = "0.26", features = ["extension-module"] }

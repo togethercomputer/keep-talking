@@ -93,7 +93,7 @@ pub enum WordSplitter {
 }
 
 impl WordSplitter {
-    pub fn into_iter<'a>(&self, text: &'a [u8], encoder: &'a EncoderMap) -> WordSplitterIter<'a> {
+    pub fn iter<'a>(&self, text: &'a [u8], encoder: &'a EncoderMap) -> WordSplitterIter<'a> {
         match self {
             Self::Unicode => WordSplitterIter::Unicode {
                 text,
