@@ -217,20 +217,17 @@ impl Tokenizer {
         };
 
         let transform_token = |token: String, rank: Rank| -> Token {
-            if hf_tokenizer.model.byte_fallback.unwrap_or(false) {
-                if let Some(hex_part) = token
+            if hf_tokenizer.model.byte_fallback.unwrap_or(false)
+                && let Some(hex_part) = token
                     .strip_prefix("<0x")
                     .and_then(|rest| rest.strip_suffix('>'))
-                {
-                    if hex_part.len() == 2 {
-                        if let Ok(byte) = u8::from_str_radix(hex_part.to_lowercase().as_str(), 16) {
-                            return Token {
-                                bytes: vec![byte],
-                                rank,
-                            };
-                        }
-                    }
-                }
+                && hex_part.len() == 2
+                && let Ok(byte) = u8::from_str_radix(hex_part.to_lowercase().as_str(), 16)
+            {
+                return Token {
+                    bytes: vec![byte],
+                    rank,
+                };
             }
 
             match &split_technique {

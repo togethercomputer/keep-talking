@@ -1,11 +1,11 @@
-use keep_talkin::{Error, Rank};
+use keep_talking::{Error, Rank};
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyType};
 
-pyo3::create_exception!(keep_talkin, InitError, PyIOError);
-pyo3::create_exception!(keep_talkin, EncodeError, PyValueError);
-pyo3::create_exception!(keep_talkin, DecodeError, PyValueError);
+pyo3::create_exception!(keep_talking, InitError, PyIOError);
+pyo3::create_exception!(keep_talking, EncodeError, PyValueError);
+pyo3::create_exception!(keep_talking, DecodeError, PyValueError);
 
 #[pyclass(eq, hash, frozen)]
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -36,8 +36,8 @@ impl Token {
     }
 }
 
-impl From<keep_talkin::Token> for Token {
-    fn from(token: keep_talkin::Token) -> Self {
+impl From<keep_talking::Token> for Token {
+    fn from(token: keep_talking::Token) -> Self {
         Self {
             bytes: token.bytes,
             rank: token.rank,
@@ -46,13 +46,13 @@ impl From<keep_talkin::Token> for Token {
 }
 
 #[pyclass]
-pub struct Tokenizer(keep_talkin::Tokenizer);
+pub struct Tokenizer(keep_talking::Tokenizer);
 
 #[pymethods]
 impl Tokenizer {
     #[classmethod]
     fn from_tokenizer_json(_cls: &Bound<'_, PyType>, path: &str) -> PyResult<Self> {
-        let tokenizer = keep_talkin::Tokenizer::from_tokenizer_json(path)
+        let tokenizer = keep_talking::Tokenizer::from_tokenizer_json(path)
             .map_err(|e| InitError::new_err(e.to_string()))?;
 
         Ok(Self(tokenizer))
@@ -65,16 +65,19 @@ impl Tokenizer {
         config_path: &str,
         regex_pattern: &str,
     ) -> PyResult<Self> {
-        let tokenizer =
-            keep_talkin::Tokenizer::from_model_and_config(model_path, config_path, [regex_pattern])
-                .map_err(|e| InitError::new_err(e.to_string()))?;
+        let tokenizer = keep_talking::Tokenizer::from_model_and_config(
+            model_path,
+            config_path,
+            [regex_pattern],
+        )
+        .map_err(|e| InitError::new_err(e.to_string()))?;
 
         Ok(Self(tokenizer))
     }
 
     #[classmethod]
     fn from_tekken(_cls: &Bound<'_, PyType>, path: &str) -> PyResult<Self> {
-        let tokenizer = keep_talkin::Tokenizer::from_tekken(path)
+        let tokenizer = keep_talking::Tokenizer::from_tekken(path)
             .map_err(|e| InitError::new_err(e.to_string()))?;
 
         Ok(Self(tokenizer))
@@ -139,7 +142,7 @@ impl Tokenizer {
 }
 
 #[pymodule]
-fn keep_talkin_py(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn keep_talking_py(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Tokenizer>()?;
     m.add_class::<Token>()?;
     m.add("InitError", py.get_type::<InitError>())?;

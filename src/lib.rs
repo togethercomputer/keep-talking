@@ -125,16 +125,16 @@ impl Tokenizer {
                 } else if let Some(bytes) = self.special_tokens_decoder.get(*token as usize) {
                     Some(&**bytes)
                 } else {
-                    return None;
+                    None
                 }
             })
             .collect::<Vec<_>>();
 
-        if let Some(prefix) = &self.prefix {
-            if sequence.first().is_some_and(|s| s.starts_with(prefix)) {
-                sequence[0] = &sequence[0][prefix.len()..];
-                return Ok(sequence);
-            }
+        if let Some(prefix) = &self.prefix
+            && sequence.first().is_some_and(|s| s.starts_with(prefix))
+        {
+            sequence[0] = &sequence[0][prefix.len()..];
+            return Ok(sequence);
         }
 
         Ok(sequence)

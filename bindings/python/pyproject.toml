@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "keep_talkin"
 version = "0.1.0"
 requires-python = ">=3.9"
-description = "Minimal Python bindings for keep-talkin"
+description = "Minimal Python bindings for keep-talking"
 authors = [{ name = "Jason Wiemels", email = "jason@together.ai" }]
 license = { text = "Apache-2.0" }
 classifiers = [
