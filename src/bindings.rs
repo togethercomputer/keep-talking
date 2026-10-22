@@ -7,7 +7,7 @@ use crate::{Error, Rank};
 pyo3::create_exception!(keep_talkin, TokenizationError, PyValueError);
 pyo3::create_exception!(keep_talkin, ModelLoadError, PyIOError);
 
-#[pyclass(eq, hash, frozen)]
+#[pyclass(eq, hash, frozen, from_py_object)]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Token {
     #[pyo3(get)]
@@ -67,7 +67,7 @@ impl Tokenizer {
         regex_pattern: &str,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: crate::Tokenizer::from_model_and_config(model_path, config_path, regex_pattern)?,
+            inner: crate::Tokenizer::from_model_and_config(model_path, config_path, [regex_pattern])?,
         })
     }
 
@@ -79,11 +79,11 @@ impl Tokenizer {
     }
 
     fn encode(&self, py: Python, data: &[u8]) -> PyResult<Vec<Rank>> {
-        py.allow_threads(|| Ok(self.inner.encode(data)?))
+        py.detach(|| Ok(self.inner.encode(data)?))
     }
 
-    fn decode(&self, py: Python, tokens: Vec<Rank>) -> PyResult<PyObject> {
-        let bytes = py.allow_threads(|| {
+    fn decode(&self, py: Python, tokens: Vec<Rank>) -> PyResult<Py<PyAny>> {
+        let bytes = py.detach(|| {
             let decoded = self.inner.decode(&tokens)?;
             Ok::<_, Error>(decoded.into_iter().flatten().copied().collect::<Vec<_>>())
         })?;
@@ -92,11 +92,11 @@ impl Tokenizer {
     }
 
     fn encode_batch(&self, py: Python, data: Vec<Vec<u8>>) -> PyResult<Vec<Vec<Rank>>> {
-        py.allow_threads(|| Ok(self.inner.encode_batch(data)?))
+        py.detach(|| Ok(self.inner.encode_batch(data)?))
     }
 
-    fn decode_batch(&self, py: Python, tokens: Vec<Vec<Rank>>) -> PyResult<Vec<PyObject>> {
-        let batch_bytes = py.allow_threads(|| {
+    fn decode_batch(&self, py: Python, tokens: Vec<Vec<Rank>>) -> PyResult<Vec<Py<PyAny>>> {
+        let batch_bytes = py.detach(|| {
             let decoded = self.inner.decode_batch(tokens)?;
 
             Ok::<_, Error>(
